@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 
-int RRQ();
+int RRQ(char message[]);
 int WRQ();
 int DATA();
 int ACK();
@@ -22,12 +22,9 @@ int main(int argc, char *argv[])
 
     int port = atoi(argv[1]); // port number from program arguments
     char *dir = argv[2]; // directory path from program arguments
-    int sockfd, dirfd;
+    int sockfd;
     struct sockaddr_in server, client;
     char message[516];
-
-    // Open directory to share
-    // TODO
 
     /* Create and bind a UDP socket */
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -53,32 +50,31 @@ int main(int argc, char *argv[])
         message[n] = '\0';
         
         int opcode = message[1];
-        char filename[512];
+        
         
         switch (opcode)
         {
             case 1:
-                RRQ();
+                RRQ(message);
                 break;
             case 2:
                 WRQ();
                 break;
             case 3:
-                RRQ();
+                DATA();
                 break;
             case 4:
-                RRQ();
+                ACK();
                 break;
             case 5:
-                RRQ();
+                ERROR();
                 break;
             default:
-                ERROR();
+                // Illegal opcode. Do something.
+                break;
         }
         
-        sprintf(filename, "%s", &message[2]);
         
-        fprintf(stdout, "Received:\n%s\n", filename);
         
         fflush(stdout);
 
@@ -93,9 +89,18 @@ int main(int argc, char *argv[])
     return 0;
 }
 
-int RRQ()
+int RRQ(char message[])
 {
+    //        2 bytes    string   1 byte     string   1 byte
+    //        -----------------------------------------------
+    // RRQ   |  01   |  Filename  |   0  |    Mode    |   0  |
+    //        -----------------------------------------------
     printf("RRQ\n");
+    char filename[512], mode[512];
+    sprintf(filename, "%s", &message[2]);
+    sprintf(mode, "%s", &message[3 + strlen(filename)]);
+    fprintf(stdout, "Filename:\n%s\n", filename);
+    fprintf(stdout, "Mode:\n%s\n", mode);
     return 0;
 }
 
