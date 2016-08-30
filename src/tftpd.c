@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <unistd.h>
 
 int RRQ(char message[]);
 int WRQ();
@@ -25,6 +26,13 @@ int main(int argc, char *argv[])
     int sockfd;
     struct sockaddr_in server, client;
     char message[516];
+    
+    /* Change directory */
+    if (chdir(dir) == -1)
+    {
+        fprintf(stderr, "Directory does not exist or is not accessable\n");
+        exit(1);
+    }
 
     /* Create and bind a UDP socket */
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -96,11 +104,16 @@ int RRQ(char message[])
     // RRQ   |  01   |  Filename  |   0  |    Mode    |   0  |
     //        -----------------------------------------------
     printf("RRQ\n");
+    
     char filename[512], mode[512];
     sprintf(filename, "%s", &message[2]);
     sprintf(mode, "%s", &message[3 + strlen(filename)]);
+    
     fprintf(stdout, "Filename:\n%s\n", filename);
     fprintf(stdout, "Mode:\n%s\n", mode);
+    
+    int fd = open(filename, O_RDONLY, S_IRUSR);
+    fprintf(stdout, "%d", fd);
     return 0;
 }
 
