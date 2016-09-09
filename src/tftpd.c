@@ -1,5 +1,6 @@
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <string.h>
@@ -9,6 +10,9 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
+
+#define WAIT 100 // Timout in 5 ms.
+#define MAX_RESEND 5 // Maximum resends.
 
 enum opcodes {RRQ=1, WRQ, DATA, ACK, ERROR};
 
@@ -27,7 +31,7 @@ typedef struct {
 
 int read_request(char message[], int sockfd);
 int transfer_data(int fd, int sockfd);
-int await_ack(int sockfd, Data *payload);
+int await_ack(int sockfd, int tries, Data *payload);
 int is_path(char filename[]);
 int send_error(int sockfd, short int code, char message[]);
 unsigned short extract_littleend16(char *buf);
@@ -165,7 +169,8 @@ int transfer_data(int fd, int sockfd)
     for (block = 1;;++block) {
         payload.block = htons(block);
         data_size = read(fd, payload.data, sizeof(payload.data));
-        
+        resend = 0;
+
         /* Loop for resending packet. */
         for (;;) {
             /* Send datagram */
@@ -175,11 +180,11 @@ int transfer_data(int fd, int sockfd)
                 return -1;
             }
 
-            resend = await_ack(sockfd, &payload);
+            resend = await_ack(sockfd, resend, &payload);
 
             if (resend == -1) {
-                /* Error from client. Abort transfer. */
-                fprintf(stderr, "Error received from client.\n");
+                /* Error from client. Or timeout to often. */
+                fprintf(stderr, "Data transfer aborted.\n");
                 return -1;
             } else if (resend == 0) {
                 /* Packet received */
@@ -198,15 +203,43 @@ int transfer_data(int fd, int sockfd)
 }
 
 /* Wait for ACK packet from client. */
-int await_ack(int sockfd, Data *payload)
+int await_ack(int sockfd, int tries, Data *payload)
 {
     //        2 bytes    2 bytes
     //        -------------------
     // ACK   | 04    |   Block #  |
     //        --------------------
+    if (tries > MAX_RESEND) {
+        /* Packet already been sent MAX_RESEND times. */
+        return -1;
+    }
+    
     char message[516];
     unsigned short int rec_block;
+    
+    /* Timeout settings */
+    fd_set sock_set;
+    struct timeval  timeout;
+    int message_received;
+    
+    FD_ZERO(&sock_set);
+    FD_SET(sockfd, &sock_set);
+    timeout.tv_sec = 0;
+    timeout.tv_usec = WAIT;
+    
     for (;;) {
+        message_received = select(sockfd + 1, &sock_set, NULL, NULL, &timeout);
+    
+        if (message_received == -1) {
+            fprintf(stderr, "Error when waiting for message.\n");
+            return -1;
+        }
+        
+        if (message_received == 0) {
+            /* Timeout */
+            return tries + 1;
+        }
+
         socklen_t len = (socklen_t) sizeof(client);
         ssize_t n = recvfrom(sockfd, message, sizeof(message) - 1,
                              0, (struct sockaddr *) &client, &len);
@@ -221,8 +254,8 @@ int await_ack(int sockfd, Data *payload)
                     /* Received most likely douplicated ACK from previous
                      * transmission. Wait for next ACK.*/
                     fprintf(stderr, "Wrong block number in ACK.\n");
-                    fprintf(stderr, "Expected: %hu\n", payload->block);
-                    fprintf(stderr, "Received: %hu\n", rec_block);
+                    fprintf(stderr, "Expected: %hu\n", ntohs(payload->block));
+                    fprintf(stderr, "Received: %hu\n", ntohs(rec_block));
                     break;
                 }
                 return 0;
@@ -274,7 +307,7 @@ int send_error(int sockfd, short int code, char message[])
     return 0;
 }
 
-/* Extracts 2 bytes from withing string and convert to host order
+/* Extracts 2 bytes from withing string.
  * (borrowed from online: 
  * http://stackoverflow.com/questions/7957381/use-stdcopy-to-copy-two-bytes-from-a-char-array-into-an-unsigned-short
  * )*/
