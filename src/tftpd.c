@@ -29,7 +29,7 @@ int read_request(char message[], int sockfd);
 int transfer_data(int fd, int sockfd);
 int await_ack(int sockfd, Data *payload);
 int is_path(char filename[]);
-int send_error(int sockfd, short int code);
+int send_error(int sockfd, short int code, char message[]);
 unsigned short extract_littleend16(char *buf);
 
 /* Global server and client socket address */
@@ -39,7 +39,7 @@ int main(int argc, char *argv[])
 {
     /* Check usage */
     if (argc < 3) {
-        printf("Usage: tftpd [port] [dir]\n");
+        fprintf(stdout, "Usage: tftpd [port] [dir]\n");
         exit(1);
     }
     
@@ -84,13 +84,14 @@ int main(int argc, char *argv[])
                 read_request(message, sockfd);
                 break;
             case WRQ:
-                // TODO: send error to client.
+                // This is an illegal TFTP opretion on this server.
+                send_error(sockfd, 4, "Illegal TFTP operation.");
                 break;
             case ERROR:
-                //
+                // Do nothing.
                 break;
             default:
-                // Illegal opcode. Do something.
+                // Illegal opcode. Do nothing.
                 break;
         }
     }
@@ -113,32 +114,33 @@ int read_request(char message[], int sockfd)
     /* Filename cannot be path */
     if (is_path(filename) == -1) {
         fprintf(stderr, "Error: Filename contains path.\n");
-        send_error(sockfd, 2);
+        send_error(sockfd, 2, "Access violation.");
         return -1;
     }
     
     /* Open the file to send */
     if ((fd = open(filename, O_RDONLY)) == -1) {
         fprintf(stderr, "File does not exist or is not accessable.\n");
-        send_error(sockfd, 1);
+        send_error(sockfd, 1, "File not found.");
         return -1;
     }
     
     /* Check if legal mode is set. */
     if (!((strncasecmp("netascii", mode, 8) == 0) || 
         (strncasecmp("octet", mode, 5) == 0)))  {
-            fprintf(stderr, "Illegal mode");
-            send_error(sockfd, 4);
+            fprintf(stderr, "Illegal mode\n");
+            send_error(sockfd, 4, "Illegal TFTP operation.");
             return -1;
     }
     
     fprintf(stdout, "file \"%s\" requested from %s:%hu\n", filename, 
             ip_address, client.sin_port);
+    fflush(stdout);
 
     transfer_data(fd, sockfd);
     
     if (close(fd) == -1) {
-        fprintf(stderr, "Error when closing file.");
+        fprintf(stderr, "Error when closing file.\n");
         return -1;
     }
 
@@ -195,6 +197,7 @@ int transfer_data(int fd, int sockfd)
     return 0;
 }
 
+/* Wait for ACK packet from client. */
 int await_ack(int sockfd, Data *payload)
 {
     //        2 bytes    2 bytes
@@ -202,6 +205,7 @@ int await_ack(int sockfd, Data *payload)
     // ACK   | 04    |   Block #  |
     //        --------------------
     char message[516];
+    unsigned short int rec_block;
     for (;;) {
         socklen_t len = (socklen_t) sizeof(client);
         ssize_t n = recvfrom(sockfd, message, sizeof(message) - 1,
@@ -213,10 +217,13 @@ int await_ack(int sockfd, Data *payload)
         
         switch (opcode) {
             case ACK:
-                if (extract_littleend16(&message[2]) != payload->block) {
-                    fprintf(stderr, "Wrong block number in ACK.");
-                    send_error(sockfd, 5);
-                    return -1;
+                if ((rec_block = extract_littleend16(&message[2])) != payload->block) {
+                    /* Received most likely douplicated ACK from previous
+                     * transmission. Wait for next ACK.*/
+                    fprintf(stderr, "Wrong block number in ACK.\n");
+                    fprintf(stderr, "Expected: %hu\n", payload->block);
+                    fprintf(stderr, "Received: %hu\n", rec_block);
+                    break;
                 }
                 return 0;
             case ERROR:
@@ -224,7 +231,7 @@ int await_ack(int sockfd, Data *payload)
                 return -1;
             default:
                 // Illegal opcode.
-                send_error(sockfd, 4);
+                send_error(sockfd, 4, "Illegal TFTP operation.");
                 return -1;
         }
     }
@@ -241,57 +248,33 @@ int is_path(char filename[])
     return 0;
 }
 
-int send_error(int sockfd, short int code)
+int send_error(int sockfd, short int code, char message[])
 {
+    //        2 bytes  2 bytes        string    1 byte
+    //        ----------------------------------------
+    // ERROR | 05    |  ErrorCode |   ErrMsg   |   0  |
+    //        ----------------------------------------
     Error payload;
     int msg_len;
     
     payload.op = htons(5);
     payload.code = htons(code);
+    strcpy(payload.message, message);
     
-    switch (code) {
-        case 1:
-            strcpy(payload.message, "File not found.");
-            break;
-        case 2:
-            strcpy(payload.message, "Access violation.");
-            break;
-        case 3:
-            // Not needed.
-            // Disk full or allocation exceeded.
-            break;
-        case 4:
-            strcpy(payload.message, "Illegal TFTP operation.");
-            break;
-        case 5:
-            strcpy(payload.message, "Unknown transfer ID.");
-            break;
-        case 6:
-            // Not needed.
-            // File already exists.
-            break;
-        case 7:
-            // Not needed.
-            // No such user.
-            break;
-        default:
-            break;
-    }
-    
+    /* Add null to end of message. */
     msg_len = strlen(payload.message);
-    
     payload.message[msg_len] = '\0';
     
     /* Send datagram */
     if (sendto(sockfd, &payload, msg_len + 5, 0, 
         (struct sockaddr *) &client, (socklen_t) sizeof(client)) == -1) {
-        printf("Error sending datagram.\n");
+        fprintf(stderr, "Error sending datagram.\n");
         return -1;
     }
     return 0;
 }
 
-/* Extract 2 bytes from withing string and convert to host order
+/* Extracts 2 bytes from withing string and convert to host order
  * (borrowed from online: 
  * http://stackoverflow.com/questions/7957381/use-stdcopy-to-copy-two-bytes-from-a-char-array-into-an-unsigned-short
  * )*/
