@@ -1,6 +1,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <string.h>
 #include <strings.h>
 #include <ctype.h>
@@ -11,6 +12,7 @@
 
 enum opcodes {RRQ=1, WRQ, DATA, ACK, ERROR};
 
+/* TFTP format packet for sending data. */
 typedef struct {
     unsigned short int op;
     unsigned short int block;
@@ -20,6 +22,7 @@ typedef struct {
 int read_request(char message[], int sockfd);
 int transfer_data(int fd, int sockfd);
 int await_ack(int sockfd, Data *datagram);
+int is_path(char filename[]);
 
 /* Global server and client socket address */
 struct sockaddr_in server, client;
@@ -38,8 +41,7 @@ int main(int argc, char *argv[])
     char message[516];
     
     /* Change directory */
-    if (chdir(dir) == -1)
-    {
+    if (chdir(dir) == -1) {
         fprintf(stderr, "Directory does not exist or is not accessable\n");
         exit(1);
     }
@@ -74,6 +76,9 @@ int main(int argc, char *argv[])
             case RRQ:
                 read_request(message, sockfd);
                 break;
+            case WRQ:
+                // TODO: send error to client.
+                break;
             case ERROR:
                 //
                 break;
@@ -81,7 +86,6 @@ int main(int argc, char *argv[])
                 // Illegal opcode. Do something.
                 break;
         }
-        fflush(stdout);
     }
     return 0;
 }
@@ -92,14 +96,21 @@ int read_request(char message[], int sockfd)
     //        -----------------------------------------------
     // RRQ   |  01   |  Filename  |   0  |    Mode    |   0  |
     //        -----------------------------------------------
-    char filename[512], mode[512];
+    char filename[512], mode[512], ip_address[INET_ADDRSTRLEN];
     int fd;
 
+    inet_ntop(AF_INET, &(client.sin_addr), ip_address, INET_ADDRSTRLEN);
     sprintf(filename, "%s", &message[2]);
     sprintf(mode, "%s", &message[3 + strlen(filename)]);
     
-    fprintf(stdout, "Filename:\n%s\n", filename);
-    fprintf(stdout, "Mode:\n%s\n", mode);
+    if (is_path(filename) == -1) {
+        fprintf(stderr, "Error: Filename contains path.\n");
+        // TODO: send error to client.
+        return -1;
+    }
+    
+    fprintf(stdout, "file \"%s\" requested from %s:%hu\n", filename, 
+            ip_address, client.sin_port);
     
     if ((strncasecmp("netascii", mode, 8) == 0) || 
         (strncasecmp("octet", mode, 5) == 0))  {
@@ -191,4 +202,15 @@ int await_ack(int sockfd, Data *datagram)
                 break;
         }
     }
+}
+
+int is_path(char filename[])
+{
+    int len = strlen(filename);
+    for (int i = 0; i < len; i++) {
+        if (filename[i] == '/') {
+            return -1;
+        }
+    }
+    return 0;
 }
