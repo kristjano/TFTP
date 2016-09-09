@@ -23,6 +23,7 @@ typedef struct {
     char data[512];
 } Data;
 
+/* TFTP format packet for sending error. */
 typedef struct {
     unsigned short int op;
     unsigned short int code;
@@ -32,8 +33,8 @@ typedef struct {
 int read_request(char message[], int sockfd);
 int transfer_data(int fd, int sockfd);
 int await_ack(int sockfd, int tries, Data *payload);
-int is_path(char filename[]);
 int send_error(int sockfd, short int code, char message[]);
+int is_path(char filename[]);
 unsigned short extract_littleend16(char *buf);
 
 /* Global server and client socket address */
@@ -102,6 +103,7 @@ int main(int argc, char *argv[])
     return 0;
 }
 
+/* Analyse RRQ. */
 int read_request(char message[], int sockfd)
 {
     //        2 bytes    string   1 byte     string   1 byte
@@ -151,6 +153,7 @@ int read_request(char message[], int sockfd)
     return 0;
 }
 
+/* Read and transfer file. */
 int transfer_data(int fd, int sockfd)
 {
     /* Build the datagram to send */
@@ -270,17 +273,6 @@ int await_ack(int sockfd, int tries, Data *payload)
     }
 }
 
-int is_path(char filename[])
-{
-    int len = strlen(filename);
-    for (int i = 0; i < len; i++) {
-        if (filename[i] == '/') {
-            return -1;
-        }
-    }
-    return 0;
-}
-
 int send_error(int sockfd, short int code, char message[])
 {
     //        2 bytes  2 bytes        string    1 byte
@@ -303,6 +295,18 @@ int send_error(int sockfd, short int code, char message[])
         (struct sockaddr *) &client, (socklen_t) sizeof(client)) == -1) {
         fprintf(stderr, "Error sending datagram.\n");
         return -1;
+    }
+    return 0;
+}
+
+/* Small helper function to see if string contains a path. */
+int is_path(char filename[])
+{
+    int len = strlen(filename);
+    for (int i = 0; i < len; i++) {
+        if (filename[i] == '/') {
+            return -1;
+        }
     }
     return 0;
 }

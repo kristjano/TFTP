@@ -1,1 +1,36 @@
-Update this.
+                            TFTP server
+
+My implementation of TFTP server only handles read requests (RRQ).
+Server will return error on write requests (WRQ).
+
+I based my solution on an example UDP server provided by Marcel Kyas.
+
+The program takes as arguments the port number to listen on and the
+path to the directory to share.
+
+USAGE
+    tftpd [port] [path]
+
+When the program receives RRQ from anyone it finds the requested 
+file and starts transfering it, 512 bytes at a time.  If the 
+requested file does not exist or the filename contains a path then 
+the server will send the appropriate error message to client.
+
+After the program sends a packet it waits for an ACK for 100 ms.
+If it does not receive ACK in that time it sends the same packet 
+again.  It resends it up to five times or until it receives ACK.
+If it doesn't receive ACK it will stop the transfer and terminate 
+the connection.
+
+If the size of the data payload is less than 512 bytes then the 
+whole file has been transmitted.  The smaller size of the last 
+packet marks the end of the transmission.
+
+If an error is received from the client then the connection will be
+terminated.  If it receives unknown or illegal packet it will send
+an error message and terminate the connection.
+
+Warning! This implementation is unsafe and should not be opened to
+or accessed from a wide area network.
+
+Notice: This implementation is ment for educational purposes only.
