@@ -35,4 +35,9 @@
 *.dSYM/
 *.su
 
+# Test data files
 data/
+
+# PDF
+*.pdf
+

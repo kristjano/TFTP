@@ -19,10 +19,18 @@ typedef struct {
     char data[512];
 } Data;
 
+typedef struct {
+    unsigned short int op;
+    unsigned short int code;
+    char message[512];
+} Error;
+
 int read_request(char message[], int sockfd);
 int transfer_data(int fd, int sockfd);
-int await_ack(int sockfd, Data *datagram);
+int await_ack(int sockfd, Data *payload);
 int is_path(char filename[]);
+int send_error(int sockfd, short int code);
+unsigned short extract_littleend16(char *buf);
 
 /* Global server and client socket address */
 struct sockaddr_in server, client;
@@ -71,8 +79,7 @@ int main(int argc, char *argv[])
         
         int opcode = message[1];
         
-        switch (opcode)
-        {
+        switch (opcode) {
             case RRQ:
                 read_request(message, sockfd);
                 break;
@@ -103,32 +110,36 @@ int read_request(char message[], int sockfd)
     sprintf(filename, "%s", &message[2]);
     sprintf(mode, "%s", &message[3 + strlen(filename)]);
     
+    /* Filename cannot be path */
     if (is_path(filename) == -1) {
         fprintf(stderr, "Error: Filename contains path.\n");
-        // TODO: send error to client.
+        send_error(sockfd, 2);
         return -1;
+    }
+    
+    /* Open the file to send */
+    if ((fd = open(filename, O_RDONLY)) == -1) {
+        fprintf(stderr, "File does not exist or is not accessable.\n");
+        send_error(sockfd, 1);
+        return -1;
+    }
+    
+    /* Check if legal mode is set. */
+    if (!((strncasecmp("netascii", mode, 8) == 0) || 
+        (strncasecmp("octet", mode, 5) == 0)))  {
+            fprintf(stderr, "Illegal mode");
+            send_error(sockfd, 4);
+            return -1;
     }
     
     fprintf(stdout, "file \"%s\" requested from %s:%hu\n", filename, 
             ip_address, client.sin_port);
-    
-    if ((strncasecmp("netascii", mode, 8) == 0) || 
-        (strncasecmp("octet", mode, 5) == 0))  {
-        /* Open the file to send */
-        if ((fd = open(filename, O_RDONLY)) == -1) {
-            fprintf(stderr, "File does not exist or is not accessable");
-            exit(1);
-        }
-    } else {
-        fprintf(stderr, "Illegal mode");
-        return -1;
-    }
 
     transfer_data(fd, sockfd);
     
     if (close(fd) == -1) {
         fprintf(stderr, "Error when closing file.");
-        exit(1);
+        return -1;
     }
 
     return 0;
@@ -141,38 +152,50 @@ int transfer_data(int fd, int sockfd)
     //        ---------------------------------
     // DATA  | 03    |   Block #  |    Data    |
     //        ---------------------------------
-    Data datagram;
-    unsigned short int block = 1;
+    Data payload;
+    ssize_t data_size;
+    unsigned short int block;
+    int resend;
     
     /* OP code and block number need to be in network byte order */
-    datagram.op = htons(3);
+    payload.op = htons(3);
     
-    for (;;) {
-        datagram.block = htons(block);
-        ssize_t data_size = read(fd, datagram.data, sizeof(datagram.data));
+    for (block = 1;;++block) {
+        payload.block = htons(block);
+        data_size = read(fd, payload.data, sizeof(payload.data));
         
-        /* Send datagram */
-        if (sendto(sockfd, &datagram, data_size + 4, 0, 
-            (struct sockaddr *) &client, (socklen_t) sizeof(client)) == -1) {
-            printf("Error sending datagram.\n");
-            return -1;
-        }
-       
-        if (await_ack(sockfd, &datagram) == -1) {
-            printf("Error received from client.\n");
-            return -1;
-        }
+        /* Loop for resending packet. */
+        for (;;) {
+            /* Send datagram */
+            if (sendto(sockfd, &payload, data_size + 4, 0, 
+                (struct sockaddr *) &client, (socklen_t) sizeof(client)) == -1) {
+                fprintf(stderr, "Error sending datagram.\n");
+                return -1;
+            }
 
-        /* If data_size is less than 512 bytes then we have sent 
-         * the whole file. */
-        if (data_size < 512) break;
-        else ++block;
+            resend = await_ack(sockfd, &payload);
+
+            if (resend == -1) {
+                /* Error from client. Abort transfer. */
+                fprintf(stderr, "Error received from client.\n");
+                return -1;
+            } else if (resend == 0) {
+                /* Packet received */
+                break;
+            } else {
+                /* Timeout. Resend. */
+            }
+        }
+        
+       /* If data_size is less than 512 bytes then we have sent 
+        * the whole file. */
+       if (data_size < 512) break;
     }
     
     return 0;
 }
 
-int await_ack(int sockfd, Data *datagram)
+int await_ack(int sockfd, Data *payload)
 {
     //        2 bytes    2 bytes
     //        -------------------
@@ -188,18 +211,21 @@ int await_ack(int sockfd, Data *datagram)
         
         int opcode = message[1];
         
-        switch (opcode)
-        {
+        switch (opcode) {
             case ACK:
-                // TODO: Validate block number. 
+                if (extract_littleend16(&message[2]) != payload->block) {
+                    fprintf(stderr, "Wrong block number in ACK.");
+                    send_error(sockfd, 5);
+                    return -1;
+                }
                 return 0;
-                break;
             case ERROR:
-                //
-                break;
+                /* Stop sending. */
+                return -1;
             default:
-                // Illegal opcode. Do something.
-                break;
+                // Illegal opcode.
+                send_error(sockfd, 4);
+                return -1;
         }
     }
 }
@@ -213,4 +239,64 @@ int is_path(char filename[])
         }
     }
     return 0;
+}
+
+int send_error(int sockfd, short int code)
+{
+    Error payload;
+    int msg_len;
+    
+    payload.op = htons(5);
+    payload.code = htons(code);
+    
+    switch (code) {
+        case 1:
+            strcpy(payload.message, "File not found.");
+            break;
+        case 2:
+            strcpy(payload.message, "Access violation.");
+            break;
+        case 3:
+            // Not needed.
+            // Disk full or allocation exceeded.
+            break;
+        case 4:
+            strcpy(payload.message, "Illegal TFTP operation.");
+            break;
+        case 5:
+            strcpy(payload.message, "Unknown transfer ID.");
+            break;
+        case 6:
+            // Not needed.
+            // File already exists.
+            break;
+        case 7:
+            // Not needed.
+            // No such user.
+            break;
+        default:
+            break;
+    }
+    
+    msg_len = strlen(payload.message);
+    
+    payload.message[msg_len] = '\0';
+    
+    /* Send datagram */
+    if (sendto(sockfd, &payload, msg_len + 5, 0, 
+        (struct sockaddr *) &client, (socklen_t) sizeof(client)) == -1) {
+        printf("Error sending datagram.\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* Extract 2 bytes from withing string and convert to host order
+ * (borrowed from online: 
+ * http://stackoverflow.com/questions/7957381/use-stdcopy-to-copy-two-bytes-from-a-char-array-into-an-unsigned-short
+ * )*/
+unsigned short extract_littleend16(char *buf)
+{
+    return (((unsigned short)buf[0]) << 0) |
+           (((unsigned short)buf[1]) << 8);
 }
